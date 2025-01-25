@@ -1,3 +1,3 @@
-# *S*egment *O*nce *G*et *A*ll
+# Segment Once Get All
 
-
+* Train and Test: `python train_debug.py`

@@ -24,7 +24,7 @@ class InfraredData(Dataset):
 
         self.train_albumentations = A.Compose(
             [
-                A.Resize(256, 256),
+                # A.Resize(256, 256),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomRotate90(p=0.5),
@@ -33,10 +33,16 @@ class InfraredData(Dataset):
         self.image_transform = transforms.Compose(
             [
                 transforms.ToTensor(),
+                transforms.Resize((256, 256), antialias=True),
                 transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
             ]
         )
-        self.mask_transform = transforms.ToTensor()
+        self.mask_transform = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Resize((256, 256), antialias=True),
+            ]
+        )
 
     def __len__(self):
         return len(self.data)

@@ -1,9 +1,11 @@
 checkpoints/
 data/*
+infrared_data/*
 runs/*
 
 .DS_Store
 temp.ipynb
+train.ipynb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

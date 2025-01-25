@@ -1,14 +1,13 @@
 import os
 from typing import Dict, Tuple
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 
 class Trainer:
@@ -19,14 +18,14 @@ class Trainer:
         val_loader,
         test_loader,
         device: torch.device,
-        lr: float = 1e-4,
-        epochs: int = 10,
-        patience: int = 5,
-        checkpoint_dir: str = "checkpoints",
-        criterion: nn.Module = nn.BCELoss(),
-        optimizer_class: optim.Optimizer = optim.Adam,
-        scheduler_class: optim.lr_scheduler._LRScheduler = ReduceLROnPlateau,
-        scheduler_kwargs: Dict = None,
+        lr: float,
+        epochs: int,
+        patience: int,
+        checkpoint_dir: str,
+        criterion: nn.Module,
+        optimizer_class: optim.Optimizer,
+        scheduler_class: optim.lr_scheduler._LRScheduler,
+        scheduler_kwargs: Dict,
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -39,23 +38,21 @@ class Trainer:
         self.epochs_without_improvement = 0
         self.checkpoint_dir = checkpoint_dir
 
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        # Create checkpoint directory for the specific model
+        self.model_name = model.__class__.__name__
+        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.model_checkpoint_dir = os.path.join(
+            self.checkpoint_dir, f"{self.model_name}_{self.timestamp}"
+        )
 
         self.criterion = criterion
         self.optimizer = optimizer_class(self.model.parameters(), lr=lr)
-
-        if scheduler_kwargs is None:
-            scheduler_kwargs = {
-                "mode": "min",
-                "factor": 0.1,
-                "patience": 2,
-                "verbose": True,
-            }
         self.scheduler = scheduler_class(self.optimizer, **scheduler_kwargs)
 
-        self.writer = SummaryWriter()
-
     def train(self):
+        self.writer = SummaryWriter()
+        os.makedirs(self.model_checkpoint_dir, exist_ok=True)
+
         for epoch in range(self.epochs):
             self.model.train()
             train_metrics = self._run_epoch(self.train_loader, training=True)
@@ -81,7 +78,7 @@ class Trainer:
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 self.epochs_without_improvement = 0
-                self.save_model("best_model.pth")
+                self.save_model("best")
                 print(f"Best model saved with val loss: {val_loss:.4f}")
             else:
                 self.epochs_without_improvement += 1
@@ -90,7 +87,7 @@ class Trainer:
                 print(f"Early stopping at epoch {epoch+1}!")
                 break
 
-        self.save_model("last_model.pth")
+        self.save_model("last")
         print("Last model saved.")
         self.writer.close()
 
@@ -100,10 +97,14 @@ class Trainer:
             metrics = self._run_epoch(self.val_loader, training=False)
         return metrics
 
-    def test(self):
+    def test(self, checkpoint: str = None):
+        if os.path.isfile(checkpoint):
+            self.load_model(checkpoint)
+
         self.model.eval()
         with torch.no_grad():
             metrics = self._run_epoch(self.test_loader, training=False)
+
         print(f"Test Loss: {metrics['loss']:.4f}")
         print(f"Test Metrics: {metrics}")
         return metrics
@@ -176,17 +177,24 @@ class Trainer:
             "iou": iou,
         }
 
-    def save_model(self, filename: str):
-        torch.save(self.model.state_dict(), os.path.join(self.checkpoint_dir, filename))
+    def save_model(self, checkpoint_type: str):
+        """Save model checkpoint."""
+        checkpoint_name = f"{checkpoint_type}_model.pth"
+        checkpoint_path = os.path.join(self.model_checkpoint_dir, checkpoint_name)
+        torch.save(self.model.state_dict(), checkpoint_path)
+        print(f"Model saved to {checkpoint_path}")
 
-    def load_model(self, filename: str):
-        self.model.load_state_dict(
-            torch.load(os.path.join(self.checkpoint_dir, filename))
-        )
+    def load_model(self, checkpoint: str):
+        """Load the checkpoint."""
+        if not checkpoint:
+            raise FileNotFoundError(f"No {checkpoint} checkpoint found.")
 
-    def visualize_predictions(self, checkpoint_filename: str):
-        # Load the model checkpoint
-        self.load_model(checkpoint_filename)
+        self.model.load_state_dict(torch.load(checkpoint, map_location=self.device))
+        print(f"Loaded checkpoint from {checkpoint}")
+
+    def visualize_predictions(self, checkpoint: str):
+        """Visualize predictions using the specified checkpoint."""
+        self.load_model(checkpoint)
 
         # Get the first batch from the test loader
         images, masks, original_images, original_masks = next(iter(self.test_loader))
@@ -196,18 +204,24 @@ class Trainer:
         self.model.eval()
         with torch.no_grad():
             outputs = self.model(images)
-            preds = (outputs > 0.5).float()
+            preds = F.interpolate(
+                outputs, size=(600, 800), mode="bilinear", align_corners=False
+            )
 
         # Move tensors to CPU and convert to numpy for visualization
-        original_images = original_images.numpy()  # (4, 600, 800, 3)
-        original_masks = original_masks.unsqueeze(3).numpy()  # (4, 600, 800, 1)
-        preds = preds.cpu().numpy().transpose(0, 2, 3, 1)  # (4, 600, 800, 1)
+        original_images = original_images.numpy()  # (B, 600, 800, 3)
+        original_masks = original_masks.unsqueeze(3).numpy()  # (B, 600, 800, 1)
 
-        ground_truth = original_images * (original_masks > 0.5).astype(float)
-        predicted = original_images * preds
+        preds = preds.cpu().numpy().transpose(0, 2, 3, 1)  # (B, 600, 800, 1)
+
+        ground_truth = (
+            original_images * (original_masks > 0.5) / 255
+        )  # (B, 600, 800, 3)
+        predicted = original_images * (preds > 0.5) / 255  # (B, 600, 800, 3)
 
         # Create a 3-row plot
-        fig, axes = plt.subplots(3, len(images), figsize=(15, 10))
+        scale = (images.shape[0] // 4) or 1
+        fig, axes = plt.subplots(3, len(images), figsize=(15 * scale, 10))
 
         for i in range(len(images)):
             # Original image (3 channels)
